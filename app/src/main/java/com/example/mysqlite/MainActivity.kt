@@ -1,32 +1,24 @@
 package com.example.mysqlite
 
 import android.content.Intent
-import androidx.appcompat.app.AppCompatActivity
 import android.os.Bundle
+import android.util.Log
+import android.view.Menu
+import android.view.MenuItem
 import android.widget.Button
 import android.widget.EditText
 import android.widget.ImageButton
 import android.widget.Toast
-import com.android.volley.Request
-import com.android.volley.RequestQueue
-import com.android.volley.VolleyError
-import com.android.volley.toolbox.StringRequest
-import com.android.volley.toolbox.Volley
-import com.loopj.android.http.AsyncHttpClient
-import com.loopj.android.http.AsyncHttpResponseHandler
-import cz.msebera.android.httpclient.Header
-import org.json.JSONArray
-import org.json.JSONException
-import android.util.Log
-import android.view.Menu
-import android.view.MenuItem
 import androidx.appcompat.app.AlertDialog
-import androidx.appcompat.widget.Toolbar
+import androidx.appcompat.app.AppCompatActivity
+import com.google.firebase.Firebase
 import com.google.firebase.auth.FirebaseAuth
-import com.google.firebase.auth.FirebaseUser
+import com.google.firebase.firestore.FieldValue
+import com.google.firebase.firestore.FirebaseFirestore
+import com.google.firebase.firestore.FirebaseFirestoreException
+import com.google.firebase.firestore.firestore
 
 class MainActivity : AppCompatActivity() {
-    private lateinit var etNumEmp: EditText
     private lateinit var etNombre: EditText
     private lateinit var etApellidos: EditText
     private lateinit var etTelefono: EditText
@@ -36,17 +28,18 @@ class MainActivity : AppCompatActivity() {
     private lateinit var btnActualizar: ImageButton
     private lateinit var btnEliminar: ImageButton
     private lateinit var btnLista: Button
-    private lateinit var requestQueue: RequestQueue
 
     private lateinit var auth: FirebaseAuth
 
-    private val url = "http://ec2-3-94-163-92.compute-1.amazonaws.com/api/"
+    private lateinit var firestore: FirebaseFirestore
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
         setContentView(R.layout.activity_main)
 
         auth = FirebaseAuth.getInstance()
+
+        firestore = Firebase.firestore
 
         val toolbar = findViewById<androidx.appcompat.widget.Toolbar>(R.id.toolbar)
         setSupportActionBar(toolbar)
@@ -62,7 +55,6 @@ class MainActivity : AppCompatActivity() {
         btnActualizar = findViewById(R.id.btnActualizar)
         btnEliminar = findViewById(R.id.btnEliminar)
         btnLista = findViewById(R.id.btnLista)
-        requestQueue = Volley.newRequestQueue(this)
 
         btnAgregar.setOnClickListener {
             agregarContacto()
@@ -226,179 +218,341 @@ class MainActivity : AppCompatActivity() {
             .show()
     }
 
-    private fun ejecutarWebService(url: String, msg: String) {
-        Toast.makeText(applicationContext,msg, Toast.LENGTH_LONG).show()
-        val stringRequest = StringRequest(Request.Method.GET, url, {
-            fun onResponse(response: String?) {
-                Toast.makeText(this@MainActivity, response.toString(), Toast.LENGTH_SHORT).show()
-            }
-        },
-            {
-                fun onErrorResponse(error: VolleyError) {
-                    Toast.makeText(this@MainActivity, error.toString(), Toast.LENGTH_SHORT).show()
-                }
-            })
-
-        val requestQueue: RequestQueue = Volley.newRequestQueue(this@MainActivity)
-        requestQueue.add(stringRequest)
-    }
-
     private fun agregarContacto() {
-        ejecutarWebService(
-            url + "androidInsercionMySql.php?nombre=" +
-                    etNombre.text + "&apellidos=" + etApellidos.text +
-                    "&telefono=" + etTelefono.text + "&email=" +
-                    etCorreo.text,
-            "Contacto registrado."
+        // Verificar que el usuario esté autenticado
+        val currentUser = auth.currentUser
+        if (currentUser == null) {
+            Toast.makeText(this, "Error: Usuario no autenticado", Toast.LENGTH_SHORT).show()
+            return
+        }
+
+        // Obtener datos de los campos (igual que antes)
+        val nombre = etNombre.text.toString().trim()
+        val apellidos = etApellidos.text.toString().trim()
+        val telefono = etTelefono.text.toString().trim()
+        val correo = etCorreo.text.toString().trim()
+
+        // Validación básica (opcional, puedes agregar más validaciones)
+        if (nombre.isEmpty() || apellidos.isEmpty()) {
+            Toast.makeText(this, "Por favor ingrese nombre y apellidos", Toast.LENGTH_SHORT).show()
+            return
+        }
+
+        // Crear el objeto contacto para Firebase
+        val contacto = hashMapOf(
+            "nombre" to nombre,
+            "apellidos" to apellidos,
+            "telefono" to telefono,
+            "email" to correo,
+            "userId" to currentUser.uid, // Para filtrar por usuario
+            "createdAt" to FieldValue.serverTimestamp(),
+            "updatedAt" to FieldValue.serverTimestamp()
         )
 
-        limpiarCampos()
+        // Guardar en Firebase Firestore
+        firestore.collection("contactos")
+            .add(contacto)
+            .addOnSuccessListener { documentReference ->
+                // Éxito - mismo mensaje que antes
+                Toast.makeText(this, "Contacto registrado.", Toast.LENGTH_SHORT).show()
+                Log.d("Firebase", "Contacto creado con ID: ${documentReference.id}")
+
+                // Limpiar campos igual que antes
+                limpiarCampos()
+            }
+            .addOnFailureListener { e ->
+                // Error - mostrar mensaje de error
+                Log.e("Firebase", "Error al crear contacto", e)
+
+                // Mensaje de error más específico basado en el tipo
+                val errorMessage = when (e) {
+                    is FirebaseFirestoreException -> {
+                        when (e.code) {
+                            FirebaseFirestoreException.Code.PERMISSION_DENIED ->
+                                "Error: Permisos insuficientes"
+                            FirebaseFirestoreException.Code.UNAVAILABLE ->
+                                "Error: Servicio no disponible, intente más tarde"
+                            FirebaseFirestoreException.Code.DEADLINE_EXCEEDED ->
+                                "Error: Revise su conexión a internet"
+                            else -> "Error al registrar contacto: ${e.message}"
+                        }
+                    }
+                    else -> "Error al registrar contacto: ${e.message}"
+                }
+
+                Toast.makeText(this, errorMessage, Toast.LENGTH_LONG).show()
+            }
     }
 
     private fun buscarContacto() {
-        // Validar que los campos requeridos no estén vacíos
+        // Verificar que el usuario esté autenticado
+        val currentUser = auth.currentUser
+        if (currentUser == null) {
+            Toast.makeText(this, "Error: Usuario no autenticado", Toast.LENGTH_SHORT).show()
+            return
+        }
+
+        // Validación igual que antes - mantener la misma lógica
         if (etNombre.text.toString().trim().isEmpty() || etApellidos.text.toString().trim().isEmpty()) {
             Toast.makeText(this, "Ingrese nombre y apellidos para buscar", Toast.LENGTH_SHORT).show()
             return
         }
 
-        //Instancia que recibe la información del servidor
-        val cliente = AsyncHttpClient()
+        val nombre = etNombre.text.toString().trim()
+        val apellidos = etApellidos.text.toString().trim()
 
-        // Construir URL con parámetros
-        val urlBusqueda = url + "androidBusquedaMySql.php?nombre=" +
-                etNombre.text.toString().trim() + "&apellidos=" + etApellidos.text.toString().trim()
+        Log.d("MainActivity", "Buscando contacto: $nombre $apellidos")
 
-        Log.d("MainActivity", "URL de búsqueda: $urlBusqueda") // Para debug
+        // Buscar en Firebase Firestore
+        firestore.collection("contactos")
+            .whereEqualTo("userId", currentUser.uid) // Solo contactos del usuario actual
+            .whereEqualTo("nombre", nombre)
+            .whereEqualTo("apellidos", apellidos)
+            .get()
+            .addOnSuccessListener { documents ->
+                if (!documents.isEmpty) {
+                    // Contacto encontrado - llenar campos igual que antes
+                    val contacto = documents.documents[0]
 
-        //Llamada al archivo PHP
-        cliente.get(urlBusqueda, object : AsyncHttpResponseHandler() {
-            override fun onSuccess(
-                statusCode: Int,
-                headers: Array<out Header>?,
-                responseBody: ByteArray?
-            ) {
-                //El código 200 indica que la petición fue exitosa
-                if (statusCode == 200 && responseBody != null) {
-                    try {
-                        val responseString = String(responseBody, Charsets.UTF_8)
-                        Log.d("MainActivity", "Response búsqueda: $responseString") // Para debug
+                    // Llenar los campos teléfono y email (mismo comportamiento que antes)
+                    etTelefono.setText(contacto.getString("telefono") ?: "")
+                    etCorreo.setText(contacto.getString("email") ?: "")
 
-                        //Si existen registros como resultado de la búsqueda
-                        if (responseString.isNotEmpty() && responseString != "0") {
+                    // Mismo mensaje de éxito
+                    Toast.makeText(this@MainActivity, "Contacto encontrado", Toast.LENGTH_SHORT).show()
 
-                            val contacto = JSONArray(responseString)
-
-                            runOnUiThread {
-                                if (contacto.length() > 0) {
-                                    val contactoEncontrado = contacto.getJSONObject(0)
-
-                                    // Llenar teléfono si existe en la respuesta
-                                    if (contactoEncontrado.has("Telefono")) {
-                                        etTelefono.setText(contactoEncontrado.getString("Telefono"))
-                                    }
-
-                                    // Llenar email
-                                    if (contactoEncontrado.has("Email")) {
-                                        etCorreo.setText(contactoEncontrado.getString("Email"))
-                                    }
-
-                                    Toast.makeText(
-                                        this@MainActivity,
-                                        "Contacto encontrado",
-                                        Toast.LENGTH_SHORT
-                                    ).show()
-                                }
-                            }
-
-                        } else {
-                            runOnUiThread {
-                                // Limpiar campos si no se encuentra
-                                etTelefono.setText("")
-                                etCorreo.setText("")
-
-                                Toast.makeText(
-                                    this@MainActivity,
-                                    "Contacto no encontrado.",
-                                    Toast.LENGTH_SHORT
-                                ).show()
-                            }
-                        }
-
-                    } catch (e: JSONException) {
-                        Log.e("MainActivity", "JSON Error en búsqueda: ${e.message}")
-                        runOnUiThread {
-                            Toast.makeText(
-                                this@MainActivity,
-                                "Error al procesar información: ${e.message}",
-                                Toast.LENGTH_LONG
-                            ).show()
-                        }
-                    } catch (e: Exception) {
-                        Log.e("MainActivity", "Error en búsqueda: ${e.message}")
-                        runOnUiThread {
-                            Toast.makeText(
-                                this@MainActivity,
-                                "Error: ${e.message}",
-                                Toast.LENGTH_LONG
-                            ).show()
-                        }
-                    }
+                    Log.d("MainActivity", "✅ Contacto encontrado: ${contacto.id}")
                 } else {
-                    runOnUiThread {
-                        Toast.makeText(
-                            this@MainActivity,
-                            "Sin resultados en búsqueda.",
-                            Toast.LENGTH_SHORT
-                        ).show()
-                    }
+                    // Contacto no encontrado - limpiar campos igual que antes
+                    etTelefono.setText("")
+                    etCorreo.setText("")
+
+                    // Mismo mensaje que antes
+                    Toast.makeText(this@MainActivity, "Contacto no encontrado.", Toast.LENGTH_SHORT).show()
+
+                    Log.d("MainActivity", "❌ Contacto no encontrado")
                 }
             }
+            .addOnFailureListener { e ->
+                // Error en la búsqueda
+                Log.e("MainActivity", "Error en búsqueda: ${e.message}", e)
 
-            override fun onFailure(
-                statusCode: Int,
-                headers: Array<out Header>?,
-                responseBody: ByteArray?,
-                error: Throwable?
-            ) {
-                val errorMessage = if (responseBody != null) {
-                    String(responseBody, Charsets.UTF_8)
-                } else {
-                    "Error de conexión"
+                // Limpiar campos en caso de error
+                etTelefono.setText("")
+                etCorreo.setText("")
+
+                // Mensaje de error más específico
+                val errorMessage = when (e) {
+                    is FirebaseFirestoreException -> {
+                        when (e.code) {
+                            FirebaseFirestoreException.Code.PERMISSION_DENIED ->
+                                "Error: Sin permisos para buscar contactos"
+                            FirebaseFirestoreException.Code.UNAVAILABLE ->
+                                "Error: Servicio no disponible"
+                            FirebaseFirestoreException.Code.DEADLINE_EXCEEDED ->
+                                "Error: Revise su conexión a internet"
+                            else -> "Error de búsqueda: ${e.message}"
+                        }
+                    }
+                    else -> "Error de búsqueda: ${e.message}"
                 }
 
-                Log.e("MainActivity", "HTTP Error en búsqueda $statusCode: $errorMessage")
-                Log.e("MainActivity", "Exception: ${error?.message}")
-
-                runOnUiThread {
-                    Toast.makeText(
-                        this@MainActivity,
-                        "Error de conexión: $statusCode - ${error?.message}",
-                        Toast.LENGTH_LONG
-                    ).show()
-                }
+                Toast.makeText(this@MainActivity, errorMessage, Toast.LENGTH_LONG).show()
             }
-        })
     }
 
     private fun actualizarContacto() {
-        ejecutarWebService(
-            url + "androidActualizacionMySql.php?nombre=" +
-                    etNombre.text + "&apellidos=" + etApellidos.text +
-                    "&telefono=" + etTelefono.text + "&email=" +
-                    etCorreo.text,
-            "Contacto actualizado."
-        )
-        limpiarCampos()
+        // Verificar que el usuario esté autenticado
+        val currentUser = auth.currentUser
+        if (currentUser == null) {
+            Toast.makeText(this, "Error: Usuario no autenticado", Toast.LENGTH_SHORT).show()
+            return
+        }
+
+        // Obtener datos de los campos
+        val nombre = etNombre.text.toString().trim()
+        val apellidos = etApellidos.text.toString().trim()
+        val telefono = etTelefono.text.toString().trim()
+        val correo = etCorreo.text.toString().trim()
+
+        // Validación - necesitamos nombre y apellidos para buscar el contacto
+        if (nombre.isEmpty() || apellidos.isEmpty()) {
+            Toast.makeText(this, "Ingrese nombre y apellidos para actualizar", Toast.LENGTH_SHORT).show()
+            return
+        }
+
+        Log.d("MainActivity", "Actualizando contacto: $nombre $apellidos")
+
+        // Primero buscar el contacto existente
+        firestore.collection("contactos")
+            .whereEqualTo("userId", currentUser.uid)
+            .whereEqualTo("nombre", nombre)
+            .whereEqualTo("apellidos", apellidos)
+            .get()
+            .addOnSuccessListener { documents ->
+                if (!documents.isEmpty) {
+                    // Contacto encontrado - proceder con la actualización
+                    val documentId = documents.documents[0].id
+
+                    // Crear el mapa de actualizaciones
+                    val updates = hashMapOf<String, Any>(
+                        "telefono" to telefono,
+                        "email" to correo,
+                        "updatedAt" to FieldValue.serverTimestamp()
+                    )
+
+                    // Actualizar el documento en Firebase
+                    firestore.collection("contactos")
+                        .document(documentId)
+                        .update(updates)
+                        .addOnSuccessListener {
+                            // Éxito - mismo mensaje que antes
+                            Toast.makeText(this@MainActivity, "Contacto actualizado.", Toast.LENGTH_SHORT).show()
+                            Log.d("MainActivity", "✅ Contacto actualizado: $documentId")
+
+                            // Limpiar campos igual que antes
+                            limpiarCampos()
+                        }
+                        .addOnFailureListener { e ->
+                            // Error al actualizar
+                            Log.e("MainActivity", "Error al actualizar contacto", e)
+
+                            val errorMessage = when (e) {
+                                is FirebaseFirestoreException -> {
+                                    when (e.code) {
+                                        FirebaseFirestoreException.Code.PERMISSION_DENIED ->
+                                            "Error: Sin permisos para actualizar contacto"
+                                        FirebaseFirestoreException.Code.NOT_FOUND ->
+                                            "Error: Contacto no encontrado"
+                                        FirebaseFirestoreException.Code.UNAVAILABLE ->
+                                            "Error: Servicio no disponible"
+                                        else -> "Error al actualizar: ${e.message}"
+                                    }
+                                }
+                                else -> "Error al actualizar: ${e.message}"
+                            }
+
+                            Toast.makeText(this@MainActivity, errorMessage, Toast.LENGTH_LONG).show()
+                        }
+                } else {
+                    // Contacto no encontrado para actualizar
+                    Toast.makeText(this@MainActivity, "Contacto no encontrado para actualizar.", Toast.LENGTH_SHORT).show()
+                    Log.d("MainActivity", "❌ Contacto no encontrado para actualizar")
+                }
+            }
+            .addOnFailureListener { e ->
+                // Error al buscar el contacto
+                Log.e("MainActivity", "Error al buscar contacto para actualizar", e)
+
+                val errorMessage = when (e) {
+                    is FirebaseFirestoreException -> {
+                        when (e.code) {
+                            FirebaseFirestoreException.Code.PERMISSION_DENIED ->
+                                "Error: Sin permisos para buscar contactos"
+                            FirebaseFirestoreException.Code.UNAVAILABLE ->
+                                "Error: Servicio no disponible"
+                            else -> "Error al buscar contacto: ${e.message}"
+                        }
+                    }
+                    else -> "Error al buscar contacto: ${e.message}"
+                }
+
+                Toast.makeText(this@MainActivity, errorMessage, Toast.LENGTH_LONG).show()
+            }
     }
 
     private fun eliminarContacto() {
-        ejecutarWebService(
-            url + "androidEliminacionMySql.php?nombre=" +
-                    etNombre.text + "&apellidos=" + etApellidos.text,
-            "Contacto eliminado."
-        )
-        limpiarCampos()
+        // Verificar que el usuario esté autenticado
+        val currentUser = auth.currentUser
+        if (currentUser == null) {
+            Toast.makeText(this, "Error: Usuario no autenticado", Toast.LENGTH_SHORT).show()
+            return
+        }
+
+        // Obtener datos de los campos
+        val nombre = etNombre.text.toString().trim()
+        val apellidos = etApellidos.text.toString().trim()
+
+        // Validación - necesitamos nombre y apellidos para buscar el contacto
+        if (nombre.isEmpty() || apellidos.isEmpty()) {
+            Toast.makeText(this, "Ingrese nombre y apellidos para eliminar", Toast.LENGTH_SHORT).show()
+            return
+        }
+
+        Log.d("MainActivity", "Eliminando contacto: $nombre $apellidos")
+
+        // Buscar el contacto que se quiere eliminar
+        firestore.collection("contactos")
+            .whereEqualTo("userId", currentUser.uid)
+            .whereEqualTo("nombre", nombre)
+            .whereEqualTo("apellidos", apellidos)
+            .get()
+            .addOnSuccessListener { documents ->
+                if (!documents.isEmpty) {
+                    // Contacto encontrado - proceder con la eliminación
+                    val documentId = documents.documents[0].id
+                    val contactoData = documents.documents[0].data
+
+                    Log.d("MainActivity", "Eliminando documento: $documentId")
+
+                    // Eliminar el documento de Firebase
+                    firestore.collection("contactos")
+                        .document(documentId)
+                        .delete()
+                        .addOnSuccessListener {
+                            // Éxito - mismo mensaje que antes
+                            Toast.makeText(this@MainActivity, "Contacto eliminado.", Toast.LENGTH_SHORT).show()
+                            Log.d("MainActivity", "✅ Contacto eliminado exitosamente: $documentId")
+
+                            // Limpiar campos igual que antes
+                            limpiarCampos()
+                        }
+                        .addOnFailureListener { e ->
+                            // Error al eliminar
+                            Log.e("MainActivity", "Error al eliminar contacto", e)
+
+                            val errorMessage = when (e) {
+                                is FirebaseFirestoreException -> {
+                                    when (e.code) {
+                                        FirebaseFirestoreException.Code.PERMISSION_DENIED ->
+                                            "Error: Sin permisos para eliminar contacto"
+                                        FirebaseFirestoreException.Code.NOT_FOUND ->
+                                            "Error: Contacto no encontrado"
+                                        FirebaseFirestoreException.Code.UNAVAILABLE ->
+                                            "Error: Servicio no disponible"
+                                        else -> "Error al eliminar: ${e.message}"
+                                    }
+                                }
+                                else -> "Error al eliminar: ${e.message}"
+                            }
+
+                            Toast.makeText(this@MainActivity, errorMessage, Toast.LENGTH_LONG).show()
+                        }
+                } else {
+                    // Contacto no encontrado para eliminar
+                    Toast.makeText(this@MainActivity, "Contacto no encontrado para eliminar.", Toast.LENGTH_SHORT).show()
+                    Log.d("MainActivity", "❌ Contacto no encontrado para eliminar")
+                }
+            }
+            .addOnFailureListener { e ->
+                // Error al buscar el contacto
+                Log.e("MainActivity", "Error al buscar contacto para eliminar", e)
+
+                val errorMessage = when (e) {
+                    is FirebaseFirestoreException -> {
+                        when (e.code) {
+                            FirebaseFirestoreException.Code.PERMISSION_DENIED ->
+                                "Error: Sin permisos para buscar contactos"
+                            FirebaseFirestoreException.Code.UNAVAILABLE ->
+                                "Error: Servicio no disponible"
+                            else -> "Error al buscar contacto: ${e.message}"
+                        }
+                    }
+                    else -> "Error al buscar contacto: ${e.message}"
+                }
+
+                Toast.makeText(this@MainActivity, errorMessage, Toast.LENGTH_LONG).show()
+            }
     }
 
     private fun limpiarCampos() {

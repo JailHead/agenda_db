@@ -8,11 +8,12 @@ import android.widget.Button
 import android.widget.TextView
 import android.widget.Toast
 import androidx.core.content.ContextCompat
-import com.loopj.android.http.AsyncHttpClient
-import com.loopj.android.http.AsyncHttpResponseHandler
-import cz.msebera.android.httpclient.Header
-import org.json.JSONArray
-import org.json.JSONException
+import com.google.firebase.Firebase
+import com.google.firebase.auth.FirebaseAuth
+import com.google.firebase.firestore.FirebaseFirestore
+import com.google.firebase.firestore.FirebaseFirestoreException
+import com.google.firebase.firestore.Query
+import com.google.firebase.firestore.firestore
 
 class ListadoActivity : AppCompatActivity() {
     // Variables simplificadas
@@ -21,9 +22,15 @@ class ListadoActivity : AppCompatActivity() {
     private lateinit var btnRegresar: Button
     private lateinit var btnActualizar: Button
 
+    private lateinit var firestore: FirebaseFirestore
+    private lateinit var auth: FirebaseAuth
+
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
         setContentView(R.layout.activity_listado)
+
+        firestore = Firebase.firestore
+        auth = FirebaseAuth.getInstance()
 
         // Asociar componentes
         txtDetalle = findViewById(R.id.txtDetalle)
@@ -31,7 +38,7 @@ class ListadoActivity : AppCompatActivity() {
         btnRegresar = findViewById(R.id.btnRegresar)
         btnActualizar = findViewById(R.id.btnActualizar)
 
-        // ✅ DEBUG: Forzar visibilidad del TextView
+        // DEBUG: Forzar visibilidad del TextView
         txtDetalle.setBackgroundColor(android.graphics.Color.WHITE)
         txtDetalle.setTextColor(android.graphics.Color.BLACK)
         txtDetalle.textSize = 14f
@@ -48,126 +55,103 @@ class ListadoActivity : AppCompatActivity() {
     }
 
     private fun listarContactos() {
-        Log.d("DEBUG", "listarContactos - INICIADO")
+        Log.d("ListadoActivity", "listarContactos - INICIADO")
 
-        // Estado de carga visible
-        txtContador.text = "🔄 Consultando servidor..."
-        txtDetalle.text = "⏳ Conectando a la base de datos...\n\nEspere un momento..."
+        // Verificar autenticación
+        val currentUser = auth.currentUser
+        if (currentUser == null) {
+            txtDetalle.text = "❌ ERROR DE AUTENTICACIÓN\n\nUsuario no autenticado.\nPor favor inicie sesión."
+            txtContador.text = "❌ Sin autenticar"
+            Toast.makeText(this, "Error: Usuario no autenticado", Toast.LENGTH_LONG).show()
+            return
+        }
 
-        val cliente = AsyncHttpClient()
-        val url = "http://ec2-54-173-9-31.compute-1.amazonaws.com/api/androidConsultaMySql.php"
+        // Estado de carga - mantener igual
+        txtContador.text = "🔄 Consultando Firebase..."
+        txtDetalle.text = "⏳ Cargando contactos desde Firebase...\n\nEspere un momento..."
 
-        cliente.get(url, object : AsyncHttpResponseHandler() {
-            override fun onSuccess(
-                statusCode: Int,
-                headers: Array<Header>,
-                responseBody: ByteArray
-            ) {
-                Log.d("DEBUG", "onSuccess - RECIBIDO")
+        // Consultar Firebase Firestore
+        firestore.collection("contactos")
+            .whereEqualTo("userId", currentUser.uid) // Solo contactos del usuario actual
+            .orderBy("createdAt", Query.Direction.DESCENDING) // Más recientes primero
+            .get()
+            .addOnSuccessListener { documents ->
+                if (!documents.isEmpty) {
+                    // Contactos encontrados - construir el texto igual que antes
+                    var listaContactos = "📱 LISTA DE CONTACTOS\n"
+                    listaContactos += "═════════════════════\n\n"
 
-                var responseString = ""
+                    documents.forEachIndexed { index, document ->
+                        listaContactos += "👤 CONTACTO ${index + 1}\n"
+                        listaContactos += "─────────────────\n"
+                        listaContactos += "Nombre: ${document.getString("nombre") ?: ""}\n"
+                        listaContactos += "Apellidos: ${document.getString("apellidos") ?: ""}\n"
 
-                try {
-                    responseString = String(responseBody, Charsets.UTF_8)
-                    Log.d("DEBUG", "Response: $responseString")
-
-                    if (responseString.isNotEmpty() && responseString != "0") {
-                        val contactos = JSONArray(responseString)
-                        val totalContactos = contactos.length()
-
-                        Log.d("DEBUG", "Total contactos: $totalContactos")
-
-                        // ✅ FORMATO SUPER SIMPLE
-                        var listaContactos = "📱 LISTA DE CONTACTOS\n"
-                        listaContactos += "═════════════════════\n\n"
-
-                        for (i in 0 until contactos.length()) {
-                            val contacto = contactos.getJSONObject(i)
-
-                            listaContactos += "👤 CONTACTO ${i + 1}\n"
-                            listaContactos += "─────────────────\n"
-                            listaContactos += "Nombre: ${contacto.getString("Nombre")}\n"
-                            listaContactos += "Apellidos: ${contacto.getString("Apellidos")}\n"
-
-                            if (contacto.has("Telefono")) {
-                                listaContactos += "Teléfono: ${contacto.optString("Telefono", "No registrado")}\n"
-                            }
-
-                            if (contacto.has("Email")) {
-                                listaContactos += "Email: ${contacto.optString("Email", "No registrado")}\n"
-                            }
-
-                            listaContactos += "\n"
+                        // Manejar campos que pueden estar vacíos
+                        val telefono = document.getString("telefono")
+                        if (!telefono.isNullOrEmpty()) {
+                            listaContactos += "Teléfono: $telefono\n"
+                        } else {
+                            listaContactos += "Teléfono: No registrado\n"
                         }
 
-                        listaContactos += "═════════════════════\n"
-                        listaContactos += "📊 Total: $totalContactos contactos"
-
-                        Log.d("DEBUG", "Texto generado length: ${listaContactos.length}")
-                        Log.d("DEBUG", "Primeros 50 chars: ${listaContactos.take(50)}")
-
-                        // ✅ ACTUALIZAR UI CON DEBUG
-                        runOnUiThread {
-                            Log.d("DEBUG", "Actualizando UI...")
-
-                            // Forzar propiedades del TextView
-                            txtDetalle.setBackgroundColor(android.graphics.Color.WHITE)
-                            txtDetalle.setTextColor(android.graphics.Color.BLACK)
-                            txtDetalle.textSize = 14f
-
-                            // Asignar texto
-                            txtDetalle.text = listaContactos
-                            txtContador.text = "✅ Cargados: $totalContactos contactos"
-                            txtContador.setTextColor(ContextCompat.getColor(this@ListadoActivity, android.R.color.holo_green_dark))
-
-                            Log.d("DEBUG", "UI actualizada. Texto en txtDetalle: ${txtDetalle.text.take(50)}")
-
-                            // ✅ FORZAR INVALIDACIÓN DE LA VISTA
-                            txtDetalle.invalidate()
-                            txtDetalle.requestLayout()
-
-                            Toast.makeText(this@ListadoActivity, "✅ $totalContactos contactos cargados", Toast.LENGTH_SHORT).show()
+                        val email = document.getString("email")
+                        if (!email.isNullOrEmpty()) {
+                            listaContactos += "Email: $email\n"
+                        } else {
+                            listaContactos += "Email: No registrado\n"
                         }
 
-                    } else {
-                        Log.d("DEBUG", "Sin contactos")
-                        runOnUiThread {
-                            txtDetalle.text = "📭 SIN CONTACTOS\n\nNo hay contactos registrados en la base de datos."
-                            txtContador.text = "📊 Total: 0 contactos"
-                        }
+                        listaContactos += "\n"
                     }
 
-                } catch (e: JSONException) {
-                    Log.e("DEBUG", "Error JSON: ${e.message}")
-                    runOnUiThread {
-                        txtDetalle.text = "❌ ERROR JSON\n\nResponse: $responseString\n\nError: ${e.message}"
-                        txtContador.text = "❌ Error en consulta"
-                        Toast.makeText(this@ListadoActivity, "Error JSON: ${e.message}", Toast.LENGTH_LONG).show()
-                    }
-                } catch (e: Exception) {
-                    Log.e("DEBUG", "Error general: ${e.message}")
-                    runOnUiThread {
-                        txtDetalle.text = "❌ ERROR GENERAL\n\nDetalles: ${e.message}"
-                        txtContador.text = "❌ Error"
-                        Toast.makeText(this@ListadoActivity, "Error: ${e.message}", Toast.LENGTH_LONG).show()
-                    }
+                    listaContactos += "═════════════════════\n"
+                    listaContactos += "📊 Total: ${documents.size()} contactos"
+
+                    Log.d("ListadoActivity", "✅ ${documents.size()} contactos cargados")
+
+                    // Actualizar UI - mantener el mismo formato
+                    txtDetalle.text = listaContactos
+                    txtContador.text = "✅ Cargados: ${documents.size()} contactos"
+                    txtContador.setTextColor(ContextCompat.getColor(this, android.R.color.holo_green_dark))
+
+                    // Forzar actualización de la vista
+                    txtDetalle.invalidate()
+                    txtDetalle.requestLayout()
+
+                    Toast.makeText(this, "✅ ${documents.size()} contactos cargados", Toast.LENGTH_SHORT).show()
+                } else {
+                    // Sin contactos - mantener el mismo mensaje
+                    txtDetalle.text = "📭 SIN CONTACTOS\n\nNo hay contactos registrados en Firebase.\n\nAgregue contactos desde la pantalla principal."
+                    txtContador.text = "📊 Total: 0 contactos"
+
+                    Log.d("ListadoActivity", "ℹ️ No hay contactos para este usuario")
+                    Toast.makeText(this, "No hay contactos registrados", Toast.LENGTH_SHORT).show()
                 }
             }
+            .addOnFailureListener { e ->
+                // Error en la consulta
+                Log.e("ListadoActivity", "Error al listar contactos: ${e.message}", e)
 
-            override fun onFailure(
-                statusCode: Int,
-                headers: Array<Header>?,
-                responseBody: ByteArray?,
-                error: Throwable
-            ) {
-                Log.e("DEBUG", "onFailure: $statusCode - ${error.message}")
-
-                runOnUiThread {
-                    txtDetalle.text = "🌐 ERROR DE CONEXIÓN\n\nCódigo: $statusCode\nError: ${error.message}"
-                    txtContador.text = "🌐 Sin conexión"
-                    Toast.makeText(this@ListadoActivity, "Error de conexión: $statusCode", Toast.LENGTH_LONG).show()
+                val errorMessage = when (e) {
+                    is FirebaseFirestoreException -> {
+                        when (e.code) {
+                            FirebaseFirestoreException.Code.PERMISSION_DENIED ->
+                                "❌ ERROR DE PERMISOS\n\nSin permisos para acceder a los contactos.\nVerifique las reglas de seguridad."
+                            FirebaseFirestoreException.Code.UNAVAILABLE ->
+                                "🌐 ERROR DE SERVICIO\n\nFirebase no disponible.\nIntente más tarde."
+                            FirebaseFirestoreException.Code.DEADLINE_EXCEEDED ->
+                                "🌐 ERROR DE RED\n\nRevise su conexión a internet."
+                            else ->
+                                "❌ ERROR FIREBASE\n\nDetalles: ${e.message}"
+                        }
+                    }
+                    else -> "❌ ERROR GENERAL\n\nDetalles: ${e.message}"
                 }
+
+                txtDetalle.text = errorMessage
+                txtContador.text = "❌ Error al cargar"
+                Toast.makeText(this, "Error al cargar contactos", Toast.LENGTH_LONG).show()
             }
-        })
     }
 }
